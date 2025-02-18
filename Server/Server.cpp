@@ -16,12 +16,12 @@
 #define CHUNK_SIZE 1024
 #define MAX_CLIENTS 20
 #define ROOMS 4
+#include <memory>
 using namespace std;
 using namespace filesystem;
-const path database = ".\\database";
 mutex console;
 atomic<int> active_clients(0);
-
+const path database = ".\\database";
 void Print(const string& output) {
     lock_guard<mutex> lock(console);
     cout << output << endl;
@@ -57,49 +57,76 @@ void Print(const string& output) {
         return file;
     }*/
 
-//struct Client {
-//    const SOCKET socket_;
-//    const string name_;
-//    Client(const SOCKET& socket, const string& client_name) : socket_(socket), name_(client_name) {}    
-//};
+        //SendResponse("File transfer completed!");
+   
+struct Sending {
 
-
-
-   /* void Get(const path& file_name) const {
+    static void sendOneByte(const SOCKET& client_socket, const uint8_t value) {
+        send(client_socket, (char*)(&value), 1, 0);
+    }
+    static void sendOneByte(const SOCKET& client_socket, const char value) {
+        send(client_socket, &value, 1, 0);
+    }
+    static void sendIntegerValue(const SOCKET& client_socket, int value) {
+        value = htonl(value);
+        send(client_socket, (char*)(&value), sizeof(value), 0);
+    }
+    static void sendMessage(const SOCKET& client_socket, const string& message) {
+        sendIntegerValue(client_socket, message.length());
+        send(client_socket, message.c_str(), (int)message.length(), 0);
+    }
+    static void sendFile(const SOCKET& client_socket, const path& file_name) {
+        sendIntegerValue(client_socket, file_size(file_name));
         ifstream file(file_name, ios::binary);
-        int size = htonl(file_size(file_name));
-        send(client_.socket_, (char*)(&size), sizeof(size), 0);
         char buffer_for_data[CHUNK_SIZE];
         while (file.read(buffer_for_data, sizeof(buffer_for_data))) {
-            send(client_.socket_, buffer_for_data, (int)(file.gcount()), 0);
+            send(client_socket, buffer_for_data, (int)(file.gcount()), 0);
         }
-        int remaining_bytes = file.gcount();
-        if (remaining_bytes > 0) {
-            send(client_.socket_, buffer_for_data, (int)remaining_bytes, 0);
-        }
+        if (file.gcount() > 0)send(client_socket, buffer_for_data, (int)(file.gcount()), 0);
         file.close();
-        SendResponse("File transfer completed!");
-    }*/
+    }
+};
 
-   
+struct Receiving {
+    static int receiveInteger(const SOCKET& client_socket) {
+        int value;
+        recv(client_socket, (char*)(&value), sizeof(value), 0);
+        value = ntohl(value);
+        return value;
+    }
 
-    /*void Put(const path& file_path) {
-        int size_of_file;
-        recv(client_.socket_, (char*)(&size_of_file), sizeof(size_of_file), 0);
-        size_of_file = ntohl(size_of_file);
+    static string receiveMessage(const SOCKET& client_socket) {
+        int length = receiveInteger(client_socket);
+        char* message = new char[length + 1];
+        recv(client_socket, message, length, 0);
+        message[length] = '\0';
+        return string(message);
+    }
+    static char receiveOneByte(const SOCKET& client_socket) {
+        char byte;
+        recv(client_socket, &byte, 1, 0);
+        return byte;
+    }
 
-        path file_name = client_.folder_ / file_path.filename();
+    static void receiveFile(const SOCKET& client_socket, const path& file_path) {
+        string confirm = Receiving::receiveMessage(client_socket);
+        if (confirm != "OK") {
+            Print("\033[94m" + confirm);
+            return;
+        }
+        int size_of_file = receiveInteger(client_socket);
+        path file_name = database / file_path.filename();
         ofstream file(file_name, ios::binary);
         int i = 0;
+        char buffer[CHUNK_SIZE] = { 0 };
         while (i != size_of_file) {
-            int bytes_received = GetReadBytes();
-            file.write(client_.buffer_, bytes_received);
+            int bytes_received = recv(client_socket, buffer, CHUNK_SIZE, 0);
+            file.write(buffer, bytes_received);
             i += bytes_received;
         }
         file.close();
-        SendResponse("File transfer completed!");
-    }*/
-
+    }
+};
 
 struct Client {
     const SOCKET socket;
@@ -137,7 +164,8 @@ class Room {
                 Message message = message_queue.front();
                 message_queue.pop();
                 for (SOCKET client : clients) {
-                    if (client != message.sender)  send(client, (message.content).c_str(), message.content.length(), 0);
+                    if (client != message.sender)Sending::sendMessage(client, message.content);
+
                 }
             }
         }
@@ -183,25 +211,24 @@ public:
 
 class Chat {
 
-    vector<Room> rooms;
+    vector<unique_ptr<Room>> rooms;
 
     void createRooms() {
         for (int i = 0; i < ROOMS; i++) {
-            rooms.emplace_back(Room(i));
+            rooms.emplace_back(make_unique<Room>(i));
         }
     }
 
     int getRoom(const SOCKET& client_socket) {
-        char room_number;
-        recv(client_socket, &room_number, 1, 0);
+        char room_number=Receiving::receiveOneByte(client_socket);
         while ((int)room_number < 0 || (int)room_number > ROOMS) {
             char incorrect_room = 0x00;
-            send(client_socket, &incorrect_room, 1, 0);
-            recv(client_socket, &room_number, 1, 0);
+            Sending::sendOneByte(client_socket, incorrect_room); 
+            room_number = Receiving::receiveOneByte(client_socket);
 
         }
         char correct_room_confirmation = 0x01;
-        send(client_socket, &correct_room_confirmation, 1, 0);
+        Sending::sendOneByte(client_socket, correct_room_confirmation);
         return (int)room_number;
     }
 
@@ -222,22 +249,24 @@ class Chat {
     }
 
     string getName(const SOCKET& client_socket) {  
-        char name_length;
-        recv(client_socket, &name_length, 1, 0);
-        name_length = (int)name_length;
-        char* name = new char[name_length + 1];
-        recv(client_socket, name, name_length, 0);
-        name[name_length] = '\0';
-        string hello = "Hello, " + string(name) + "! This is the server. What is the room number?";
-        send(client_socket, hello.c_str(), (int)(hello.length()), 0);
-        return string(name);     
+        Sending::sendMessage(client_socket,"Tell me your name, please!" );
+        string name = Receiving::receiveMessage(client_socket);
+        string hello = "Hello, " + name + "! This is the server. What is the room number?";
+        Sending::sendMessage(client_socket, hello);
+        return name;     
     }
 
     void CloseClient( Client& client) {
-        rooms[client.room].takeClientAway(client.socket);
+        rooms[client.room]->takeClientAway(client.socket);
         active_clients--;
         closesocket(client.socket);
         Print("\033[94mClient " + client.name + " " + to_string(client.socket) + " disconnected.\033[0m");
+    }
+    void Register(Client& client) {
+        client.name = getName(client.socket);
+        client.room = getRoom(client.socket);
+        Sending::sendMessage(client.socket, "Registered.");
+
     }
 
 public:
@@ -249,8 +278,7 @@ public:
     void HandleClient(const SOCKET& client_socket) {
         Client client(client_socket);
         if (isGreetingSuccessful(client_socket)) {
-            client.name = getName(client_socket);
-            client.room = getRoom(client_socket);
+            Register(client);
             char buffer[1024];
             while (true) {
                 int bytesReceived = recv(client_socket, buffer, sizeof(buffer), 0);
@@ -261,23 +289,18 @@ public:
                 buffer[bytesReceived] = '\0';
                 string message(buffer);
                 string messsage_from_client = "Client " + client.name + " " + to_string(client_socket) + ": " + message;
-                rooms[client.room].addMessageToQueue(Message(messsage_from_client, client_socket));
+                rooms[client.room]->addMessageToQueue(Message(messsage_from_client, client_socket));
 
                 Print("\033[94m" + client.name + ": " + message + "\033[94m");
             }
         }
-        else {
-            const char* error = "The protocol was ignored!";
-            send(client_socket, error, (int)(strlen(error)), 0);
-        }
-
+        else Sending::sendMessage(client.socket, "The protocol was ignored!");
         CloseClient(client);
     }
 };
 
 int main()
 {
-    vector<thread> threads;
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
         cerr << "\033[94mWSAStartup failed!\033[0m" << endl;
@@ -324,10 +347,7 @@ int main()
                 continue;
             }
             active_clients++;
-            threads.emplace_back([&chat, client_socket] {
-                chat.HandleClient(client_socket);
-             });
-            threads.back().detach();
+            std::thread(&Chat::HandleClient, &chat, client_socket).detach();
         }
     }
     closesocket(server_socket);
