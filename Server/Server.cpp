@@ -28,19 +28,21 @@ void Print(const string& output) {
 }
    
 struct Sending {
-
     static void sendOneByte(const SOCKET& client_socket, const char value) {
         send(client_socket, &value, 1, 0);
     }
+
     static void sendIntegerValue(const SOCKET& client_socket, int value) {
         value = htonl(value);
         send(client_socket, (char*)(&value), sizeof(value), 0);
     }
+
     static void sendMessage(const SOCKET& client_socket, const string& message, char tag) {
         send(client_socket, &tag, 1, 0);
         sendIntegerValue(client_socket, message.length());
         send(client_socket, message.c_str(), (int)message.length(), 0);
     }
+
     static void sendFile(const SOCKET& client_socket, const string& file_name) {
         sendOneByte(client_socket, 0x03);
         path p = database / path(file_name);
@@ -126,6 +128,14 @@ class Room {
     thread room_manager;
     bool server_alive = true;
     
+    void sendToNeighbours(const Message& message)const {
+        for (SOCKET client : clients) {
+            if (client != message.sender) {
+                Sending::sendMessage(client, message.content, message.tag);
+                if (message.tag == 0x02)Sending::sendMessage(client, message.add_info, 0x04);
+            }
+        }
+    }
 
 public:
     Room(int n) :number(n) {
@@ -140,19 +150,9 @@ public:
             while (!message_queue.empty()) {
                 Message message = message_queue.front();
                 message_queue.pop();
-                if(message.tag == 0x06)Sending::sendMessage(message.sender, message.content, message.tag);
+                if (message.tag == 0x06)Sending::sendMessage(message.sender, message.content, message.tag);
                 else if (message.tag == 0x03)Sending::sendFile(message.sender, message.content);
-                else {
-                    for (SOCKET client : clients) {
-                        if (client != message.sender) {
-                            
-                            Sending::sendMessage(client, message.content, message.tag);
-                            if (message.tag == 0x02)Sending::sendMessage(client, message.add_info, 0x04);
-
-                            
-                        }
-                    }
-                }
+                else sendToNeighbours(message);
             }
         }
     }
@@ -172,16 +172,16 @@ public:
         }
         string confirmation = client.name + "-"+ to_string(client.socket)+ " joined";
         addMessageToQueue(Message(0x01, confirmation, client.socket));
-        Print("\033[94mClient\033[36m " + client.name + "\033[94m joined ROOM\033[36m " + to_string(number) + "\033[0m");
+        Print("\033[94mClient\033[36m " + client.name + "\033[94m joined ROOM\033[36m " + to_string(client.room+1) + "\033[0m");///
     }
 
-    void takeClientAway(const Client& client) {
-        {
-            lock_guard<mutex> lock(client_storage_mutex_);
-            clients.erase(client.socket);
-        }
-        string bye_message = client.name + "-" + to_string(client.socket) + " left the room";
-        addMessageToQueue(Message(0x01,bye_message, client.socket));
+    void takeClientAway(const Client& client) {    
+        
+        lock_guard<mutex> lock(client_storage_mutex_);
+        clients.erase(client.socket);
+        string bye_message = client.name + "-" + to_string(client.socket) + " is leaving the room";
+        addMessageToQueue(Message(0x01, bye_message, client.socket));
+        Print("\033[94mClient\033[36m " + client.name + "\033[94m left ROOM\033[36m " + to_string(client.room + 1) + "\033[0m");///
     }
     
     ~Room() {
@@ -233,19 +233,21 @@ class Chat {
         return name;     
     }
 
-    void CloseClient( Client& client) {
+    void CloseClient(const Client& client) {
+
         if(client.room != -1)rooms[client.room]->takeClientAway(client.socket);
         active_clients--;
         closesocket(client.socket);
         Print("\033[94m" + client.name + "-" + to_string(client.socket) + " disconnected\033[94m");
     }
+
     void Register(Client& client) {
         client.name = getName(client.socket);
         client.room = getRoom(client.socket);
         Sending::sendMessage(client.socket, "Registered.", 0x06);
         rooms[client.room]->addClient(client);
-
     }
+
     void changeRoom(Client& client, int room_number) {
         if (room_number < 0 || room_number > ROOMS || room_number == client.room) {
             rooms[client.room]->addMessageToQueue(Message(0x06, "Invalid room number!", client.socket));
@@ -260,7 +262,6 @@ class Chat {
     void handleTag3(Client& client, const string& data) {
         int size = Receiving::receiveInteger(client.socket);
         int result = Receiving::receiveFile(client.socket, data, size);
-
         if (result == 0) {
             rooms[client.room]->addMessageToQueue(Message(0x06, "File was not sent due to some unexpected issues!", client.socket));
             return;
@@ -268,13 +269,11 @@ class Chat {
         string message = client.name + "-" + to_string(client.socket) + " wants to send a file of size " + to_string(size) + " bytes. Do you accept it? It's name is ";
         rooms[client.room]->addMessageToQueue(Message(0x02, message, client.socket, path(data).filename().string()));
     }
-
-    
-    
+      
     void handleIncomingData(Client& client, char tag, const string& data) {
         switch(tag) {
         case 0x01:
-            rooms[client.room]->addMessageToQueue(Message(0x01, client.name + " " + to_string(client.socket) + ": " + data, client.socket));
+            rooms[client.room]->addMessageToQueue(Message(0x01, client.name + "-" + to_string(client.socket) + ": " + data, client.socket));
             break;
         case 0x02:
             changeRoom(client, stoi(data));
@@ -301,7 +300,7 @@ public:
             char buffer[1024];
             while (true) {
                 char tag = Receiving::receiveOneByte(client_socket);
-                if (tag == 0 || tag == 0x05) break;
+                if (tag == 0) break;
                 string message = Receiving::receiveMessage(client_socket);
                 if (message.empty())break;
                 Print("\033[94m" + client.name + " from room " + to_string(client.room) + ": " + message + "\033[94m");

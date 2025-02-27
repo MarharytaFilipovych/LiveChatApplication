@@ -64,6 +64,7 @@ struct Receiving {
 		delete[] message;
 		return result;
 	}
+
 	static char receiveOneByte(const SOCKET& client_socket) {
 		char byte;
 		int received = recv(client_socket, &byte, 1, 0);
@@ -167,7 +168,7 @@ struct InputParser {
 	}
 
 	static char getType(string& input) {
-		if (input.empty() || input.length() < +2)return '0';
+		if (input.empty() || input.length() < 2)return '0';
 		char number;
 		stringstream ss(input);
 		ss >> number;
@@ -225,12 +226,15 @@ class Communication {
 		Sending::sendMessage(socket, input);
 	}
 
-	void changeRoom(const string& input)const {
+	void changeRoom(const string& input) {
+		unique_lock<mutex> lock(m);
+		confirmation = false;
 		if (!InputParser::stringConatinsOnlyDigits(input)) {
 			cout << "\033[31mIncorrect input!\033[0m\n";
 			return;
 		}	
 		sendSimpleMessage(input, 0x02);		
+		cv_input.wait(lock, [this] {return confirmation; });
 	}
 
 	void sendFile(const string& input)const {
@@ -249,31 +253,46 @@ class Communication {
 		cout << sth;
 	}
 
+	void handleTag3() {
+		block_input = true;
+		Receiving::receiveFile(socket, files.front());
+		files.erase(files.begin());
+		block_input = false;
+		cv_input.notify_one();
+	}
+
+	void handleTag2() {
+		need_user_response = true;
+		string question = "\033[92m" + Receiving::receiveResponse(socket);
+		Receiving::receiveOneByte(socket);
+		string file_name = Receiving::receiveResponse(socket);
+		cout << question << file_name << +"\033[0m\n";
+		files.push_back(file_name);
+		unique_lock<mutex> lock(m);
+		cv_response.wait(lock, [this] { return !need_user_response; });	
+	}
+
+	void getResponse() {
+		while (input.empty())getline(cin, input);
+		InputParser::isYes(input) ? sendSimpleMessage(files.front(), 0x04) : sendSimpleMessage("no", 0x04);
+		need_user_response = false;
+		cv_response.notify_one();
+	}
+
 	void getUserInput() {
 		while (true) {
 			unique_lock<mutex> lock(m);
 			cv_input.wait(lock, [this] {return !block_input; });
 			lock.unlock();
 			getline(cin, input);
-			if (need_user_response) {
-				InputParser::isYes(input) ? sendSimpleMessage(files.front(), 0x04) : sendSimpleMessage("no", 0x04);
-				need_user_response = false;
-				cv_response.notify_one();
-			}
+			if (need_user_response) getResponse();
 			else {
 				if (InputParser::ToUpper(input) == "EXIT")break;
 				char tag = InputParser::getType(input);
-				string message_itself = InputParser::getMessageItself(input);
 				if (tag == '0') cout << "\033[31mInvalid input!\033[0m\n";
-				else if (tag == '1')sendSimpleMessage(message_itself, 0x01);
-				else if (tag == '2') {
-					unique_lock<mutex> lock(m);
-					confirmation = false;	
-					changeRoom(message_itself);
-					cv_input.wait(lock, [this] {return confirmation; });
-					
-				}
-				else sendFile(message_itself);
+				else if (tag == '1')sendSimpleMessage(InputParser::getMessageItself(input), 0x01);
+				else if (tag == '2') changeRoom(InputParser::getMessageItself(input)); 
+				else sendFile(InputParser::getMessageItself(input));
 			}
 		}
 	}
@@ -281,7 +300,6 @@ class Communication {
 	void receiveMessages() {
 		while (true) {
 			if (stop)break;
-			string file_name, question;
 			char tag = Receiving::receiveOneByte(socket);
 			while (tag == 0 && !stop) {
 				Receiving::receiveOneByte(socket);
@@ -291,23 +309,10 @@ class Communication {
 				Print("\033[93m");
 				break;
 			case 0x02:
-				need_user_response = true;
-				question = "\033[92m" + Receiving::receiveResponse(socket);
-				Receiving::receiveOneByte(socket);			
-				file_name = Receiving::receiveResponse(socket);
-				cout << question << file_name << +"\033[0m\n";
-				files.push_back(file_name);
-				{
-					unique_lock<mutex> lock(m);
-					cv_response.wait(lock, [this] { return !need_user_response; });
-				}
+				handleTag2();
 				break;
 			case 0x03:
-				block_input = true;		
-				Receiving::receiveFile(socket, files.front());
-				files.erase(files.begin());
-				block_input = false;
-				cv_input.notify_one();
+				handleTag3();
 				break;
 			case 0x06:
 				Print("\033[94m");
@@ -328,7 +333,6 @@ class Communication {
 	~Communication() {
 		stop = true;
 		receiver.join();
-		Sending::sendOneByte(socket, 0x05);
 	}
 };
 
@@ -362,6 +366,7 @@ int main()
 		WSACleanup();
 		return 1;
 	}
+
 	Registration regisration(client_socket);
 	InputParser::printInstructions();
 
