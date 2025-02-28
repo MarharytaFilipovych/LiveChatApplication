@@ -46,8 +46,7 @@ struct Receiving {
 	static int receiveInteger(const SOCKET& client_socket) {
 		int value;
 		recv(client_socket, (char*)(&value), sizeof(value), 0);
-		value = ntohl(value);
-		return value;
+		return ntohl(value);
 	}
 
 	static string receiveResponse(const SOCKET& client_socket) {
@@ -117,6 +116,7 @@ class Registration {
 		while (client_name.empty()) {
 			getline(cin, client_name);
 		}
+		client_name.erase(remove(client_name.begin(), client_name.end(), ' '), client_name.end());
 		database = database / path(client_name) / path(to_string(socket));
 		create_directories(database);		
 		Sending::sendMessage(socket, client_name);

@@ -172,7 +172,7 @@ public:
         }
         string confirmation = client.name + "-"+ to_string(client.socket)+ " joined";
         addMessageToQueue(Message(0x01, confirmation, client.socket));
-        Print("\033[94mClient\033[36m " + client.name + "\033[94m joined ROOM\033[36m " + to_string(client.room+1) + "\033[0m");///
+        Print("\033[94mClient\033[36m " + client.name + "\033[94m joined ROOM\033[36m " + to_string(client.room) + "\033[0m");///
     }
 
     void takeClientAway(const Client& client) {    
@@ -181,7 +181,7 @@ public:
         clients.erase(client.socket);
         string bye_message = client.name + "-" + to_string(client.socket) + " is leaving the room";
         addMessageToQueue(Message(0x01, bye_message, client.socket));
-        Print("\033[94mClient\033[36m " + client.name + "\033[94m left ROOM\033[36m " + to_string(client.room + 1) + "\033[0m");///
+        Print("\033[94mClient\033[36m " + client.name + "\033[94m left ROOM\033[36m " + to_string(client.room) + "\033[0m");///
     }
     
     ~Room() {
@@ -235,7 +235,7 @@ class Chat {
 
     void CloseClient(const Client& client) {
 
-        if(client.room != -1)rooms[client.room]->takeClientAway(client.socket);
+        if(client.room != -1)rooms[client.room]->takeClientAway(client);
         active_clients--;
         closesocket(client.socket);
         Print("\033[94m" + client.name + "-" + to_string(client.socket) + " disconnected\033[94m");
@@ -244,7 +244,8 @@ class Chat {
     void Register(Client& client) {
         client.name = getName(client.socket);
         client.room = getRoom(client.socket);
-        Sending::sendMessage(client.socket, "Registered.", 0x06);
+        string message = "Successfully registered with a name " + client.name + "-" + to_string(client.socket) + " in the room " + to_string(client.room)+".";
+        Sending::sendMessage(client.socket, message, 0x06);
         rooms[client.room]->addClient(client);
     }
 
