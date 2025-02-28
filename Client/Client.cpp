@@ -74,20 +74,19 @@ struct Receiving {
 	static int receiveFile(const SOCKET& client_socket, const string& file_name) {
 		int size_of_file = Receiving::receiveInteger(client_socket);
 		path path_to_file = database / path(file_name);
+		if (exists(path_to_file))return 1;
 		ofstream file(path_to_file, ios::binary);
 		int i = 0;
 		char buffer[CHUNK_SIZE] = { 0 };
 		while (i != size_of_file) {
 				int bytes_received = recv(client_socket, buffer, CHUNK_SIZE, 0);
 				if (bytes_received <= 0 && i != size_of_file) {
-					cout << "\033[91File was not recieved\033[0m\n";
 					return 0;
 				}
 				file.write(buffer, bytes_received);
 				i += bytes_received;
 		}
 		file.close();
-		cout << "\033[95File recieved\033[0m\n";
 		return 1;
 	}
 };
@@ -161,7 +160,7 @@ struct InputParser {
 
 	static void printInstructions() {
 		cout << "\033[96mRules:\n"
-			<< "You should enter such numbers before you input depending on the purpose:\n"
+			<< "You should enter such numbers before your input depending on the purpose:\n"
 			<< "* 1 - simple message\n"
 			<< "* 2 - change room: 2 ROOM_NUMBER\n"
 			<< "* 3 - send file: 3 PATH\033[0m\n";
@@ -203,7 +202,6 @@ struct InputParser {
 	static bool isIncorrectFile(const path& file)  {
 		return !is_regular_file(file) || !exists(file) || file_size(file) == 0;
 	}
-	
 
 	static bool isYes(const string& decision) {
 		unordered_set<string> possible_yes = { "YES", "Y", "YEAH", "YEP" };
@@ -255,10 +253,12 @@ class Communication {
 
 	void handleTag3() {
 		block_input = true;
-		Receiving::receiveFile(socket, files.front());
-		files.erase(files.begin());
+		int result = Receiving::receiveFile(socket, files.front());
+		if (result == 1)cout << "\033[95mFile received\033[0m\n";	
+		else cout << "\033[91mFile was not recieved\033[0m\n";
 		block_input = false;
 		cv_input.notify_one();
+		files.erase(files.begin());
 	}
 
 	void handleTag2() {
@@ -279,6 +279,8 @@ class Communication {
 		cv_response.notify_one();
 	}
 
+	
+
 	void getUserInput() {
 		while (true) {
 			unique_lock<mutex> lock(m);
@@ -287,7 +289,10 @@ class Communication {
 			getline(cin, input);
 			if (need_user_response) getResponse();
 			else {
-				if (InputParser::ToUpper(input) == "EXIT")break;
+				if (InputParser::ToUpper(input) == "EXIT") {
+					Sending::sendOneByte(socket, 0x05);
+					break;
+				}
 				char tag = InputParser::getType(input);
 				if (tag == '0') cout << "\033[31mInvalid input!\033[0m\n";
 				else if (tag == '1')sendSimpleMessage(InputParser::getMessageItself(input), 0x01);
@@ -314,6 +319,9 @@ class Communication {
 			case 0x03:
 				handleTag3();
 				break;
+			case 0x05:
+				Print("\033[94m");
+				break;
 			case 0x06:
 				Print("\033[94m");
 				confirmation = true;
@@ -333,6 +341,8 @@ class Communication {
 	~Communication() {
 		stop = true;
 		receiver.join();
+		closesocket(socket);
+		WSACleanup();
 	}
 };
 
@@ -369,10 +379,7 @@ int main()
 
 	Registration regisration(client_socket);
 	InputParser::printInstructions();
-
 	Communication communication(client_socket);
-	closesocket(client_socket);
-	WSACleanup();
 	return 0;
 }
 

@@ -89,6 +89,7 @@ struct Receiving {
 
     static int receiveFile(const SOCKET& client_socket, const path& file_path, const int size) {
         path file_name = database / file_path.filename();
+        if (exists(file_name))return 1;
         ofstream file(file_name, ios::binary);
         int i = 0;
         char buffer[CHUNK_SIZE] = { 0 };
@@ -244,7 +245,8 @@ class Chat {
     void Register(Client& client) {
         client.name = getName(client.socket);
         client.room = getRoom(client.socket);
-        string message = "Successfully registered with a name " + client.name + "-" + to_string(client.socket) + " in the room " + to_string(client.room)+".";
+        int room = client.room + 1;
+        string message = "Successfully registered with a name " + client.name + "-" + to_string(client.socket) + " in the room " + to_string(room)+".";
         Sending::sendMessage(client.socket, message, 0x06);
         rooms[client.room]->addClient(client);
     }
@@ -302,6 +304,10 @@ public:
             while (true) {
                 char tag = Receiving::receiveOneByte(client_socket);
                 if (tag == 0) break;
+                if (tag == 0x05) {
+                    Sending::sendMessage(client.socket, "Bye client!", 0x05);
+                    break;
+                }
                 string message = Receiving::receiveMessage(client_socket);
                 if (message.empty())break;
                 Print("\033[94m" + client.name + " from room " + to_string(client.room) + ": " + message + "\033[94m");
