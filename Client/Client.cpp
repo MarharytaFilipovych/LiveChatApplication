@@ -7,11 +7,18 @@
 #include <thread>
 #include <mutex>
 #include <unordered_set>
+#include <queue>
 #pragma comment(lib, "ws2_32.lib")
 #define CHUNK_SIZE 1024
 using namespace std;
 using namespace filesystem;
 path database = path("C:\\Margo\\Parallel and clien-server programming\\Assignment 6\\Client\\database");
+
+void exitWithFailure(const SOCKET& socket) {
+		closesocket(socket);
+		WSACleanup();
+		exit(EXIT_FAILURE);
+}
 
 struct Sending {
 
@@ -45,7 +52,8 @@ struct Sending {
 struct Receiving {
 	static int receiveInteger(const SOCKET& client_socket) {
 		int value;
-		recv(client_socket, (char*)(&value), sizeof(value), 0);
+		int received = recv(client_socket, (char*)(&value), sizeof(value), 0);
+		if (received <= 0)return 0;
 		return ntohl(value);
 	}
 
@@ -73,6 +81,7 @@ struct Receiving {
 
 	static int receiveFile(const SOCKET& client_socket, const string& file_name) {
 		int size_of_file = Receiving::receiveInteger(client_socket);
+		if (size_of_file == 0)return 0;
 		path path_to_file = database / path(file_name);
 		if (exists(path_to_file))return 1;
 		ofstream file(path_to_file, ios::binary);
@@ -80,9 +89,7 @@ struct Receiving {
 		char buffer[CHUNK_SIZE] = { 0 };
 		while (i != size_of_file) {
 				int bytes_received = recv(client_socket, buffer, CHUNK_SIZE, 0);
-				if (bytes_received <= 0 && i != size_of_file) {
-					return 0;
-				}
+				if (bytes_received <= 0 && i != size_of_file) return 0;
 				file.write(buffer, bytes_received);
 				i += bytes_received;
 		}
@@ -137,18 +144,20 @@ class Registration {
 	void getRegistered() {
 		SendInitialGreeting();
 		sendName();
-		Receiving::receiveOneByte(socket);
-		string buffer = "\033[94m" + Receiving::receiveResponse(socket)+"\033[0m\n";
+		char b = Receiving::receiveOneByte(socket);
+		if ( b == 0x00)exitWithFailure(socket);
+		string buffer = Receiving::receiveResponse(socket);
+		if (buffer == "")exitWithFailure(socket);
+		buffer = "\033[94m" + buffer + "\033[0m\n";
 		cout << buffer;
 		sendRoom();
 		char tag = Receiving::receiveOneByte(socket);
-		string register_completed = "\033[91m" + Receiving::receiveResponse(socket) + "\033[0m\n";
+		if(tag == 0x00)exitWithFailure(socket);
+		string register_completed = Receiving::receiveResponse(socket);
+		if (register_completed == "")exitWithFailure(socket);
+		register_completed = "\033[91m" + register_completed + "\033[0m\n";
 		cout << register_completed;
-		if (tag == 0x05) {	
-			closesocket(socket);
-			WSACleanup();
-			exit(EXIT_FAILURE);
-		}
+		if (tag == 0x05)exitWithFailure(socket);
 	}
 
 public:
@@ -215,7 +224,7 @@ class Communication {
 	condition_variable cv_input, cv_response;
 	thread receiver;
 	bool stop = false , need_user_response = false, block_input = false, confirmation = false;
-	vector<string> files;
+	queue<string> files;
 	string input;
 	mutex m;
 
@@ -232,7 +241,7 @@ class Communication {
 			return;
 		}	
 		sendSimpleMessage(input, 0x02);		
-		cv_input.wait(lock, [this] {return confirmation; });
+		cv_input.wait(lock, [this] {return confirmation ||stop; });
 	}
 
 	void sendFile(const string& input)const {
@@ -258,18 +267,22 @@ class Communication {
 		else cout << "\033[91mFile was not recieved\033[0m\n";
 		block_input = false;
 		cv_input.notify_one();
-		files.erase(files.begin());
+		files.pop();
 	}
 
 	void handleTag2() {
 		need_user_response = true;
-		string question = "\033[92m" + Receiving::receiveResponse(socket);
-		Receiving::receiveOneByte(socket);
+		string question = Receiving::receiveResponse(socket);
+		if (question == "")exitWithFailure(socket);
+		char b = Receiving::receiveOneByte(socket);
+		if(b == 0x00)exitWithFailure(socket);
 		string file_name = Receiving::receiveResponse(socket);
-		cout << question << file_name << +"\033[0m\n";
-		files.push_back(file_name);
+		if (file_name == "")exitWithFailure(socket);
+		string to_print = "\033[92m" + question + file_name + "\033[0m\n";
+		cout << to_print;
+		files.push(file_name);
 		unique_lock<mutex> lock(m);
-		cv_response.wait(lock, [this] { return !need_user_response; });	
+		cv_response.wait(lock, [this] { return !need_user_response || stop; });	
 	}
 
 	void getResponse() {
@@ -279,12 +292,12 @@ class Communication {
 		cv_response.notify_one();
 	}
 
-	
 
 	void getUserInput() {
 		while (true) {
 			unique_lock<mutex> lock(m);
-			cv_input.wait(lock, [this] {return !block_input; });
+			cv_input.wait(lock, [this] {return !block_input || stop; });
+			if (stop)break;
 			lock.unlock();
 			getline(cin, input);
 			if (need_user_response) getResponse();
@@ -302,14 +315,19 @@ class Communication {
 		}
 	}
 
+	void cleanResources() {
+		closesocket(socket);
+		WSACleanup();
+	}
+
 	void receiveMessages() {
-		while (true) {
-			if (stop)break;
+		while (!stop) {
 			char tag = Receiving::receiveOneByte(socket);
-			while (tag == 0 && !stop) {
-				Receiving::receiveOneByte(socket);
-			}
 			switch (tag) {
+			case 0x00:
+				cout << "The server terminated unexpectedly!" << endl;
+				cleanResources();
+				exit(EXIT_FAILURE);
 			case 0x01:
 				Print("\033[93m");
 				break;
@@ -340,12 +358,12 @@ class Communication {
 
 	~Communication() {
 		stop = true;
-		receiver.join();
-		closesocket(socket);
-		WSACleanup();
+		cv_input.notify_all();
+		cv_response.notify_all();
+		if (receiver.joinable())receiver.join();
+		cleanResources();
 	}
 };
-
 
 int main()
 {

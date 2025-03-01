@@ -61,8 +61,7 @@ struct Receiving {
     static int receiveInteger(const SOCKET& client_socket) {
         int value;
         recv(client_socket, (char*)(&value), sizeof(value), 0);
-        value = ntohl(value);
-        return value;
+        return ntohl(value);
     }
     
     static string receiveMessage(const SOCKET& client_socket) {
@@ -206,7 +205,7 @@ class Chat {
         while (room_number <= 0 || room_number > ROOMS) {
             char incorrect_room = 0x00;
             Sending::sendOneByte(client_socket, incorrect_room); 
-            room_number = Receiving::receiveOneByte(client_socket);
+            room_number = Receiving::receiveOneByte(client_socket)-'0';
 
         }
         char correct_room_confirmation = 0x01;
@@ -234,7 +233,7 @@ class Chat {
         return name;     
     }
 
-    void CloseClient(const Client& client) {
+    void closeClient(const Client& client) {
 
         if(client.room != -1)rooms[client.room]->takeClientAway(client);
         active_clients--;
@@ -242,7 +241,7 @@ class Chat {
         Print("\033[94m" + client.name + "-" + to_string(client.socket) + " disconnected\033[94m");
     }
 
-    void Register(Client& client) {
+    void registerClient(Client& client) {
         client.name = getName(client.socket);
         client.room = getRoom(client.socket);
         int room = client.room + 1;
@@ -269,6 +268,7 @@ class Chat {
             rooms[client.room]->addMessageToQueue(Message(0x06, "File was not sent due to some unexpected issues!", client.socket));
             return;
         }
+        rooms[client.room]->addMessageToQueue(Message(0x06, "File was sent!", client.socket));
         string message = client.name + "-" + to_string(client.socket) + " wants to send a file of size " + to_string(size) + " bytes. Do you accept it? It's name is ";
         rooms[client.room]->addMessageToQueue(Message(0x02, message, client.socket, path(data).filename().string()));
     }
@@ -296,10 +296,10 @@ public:
         createRooms();
     }
 
-    void HandleClient(const SOCKET& client_socket) {
+    void handleClient(const SOCKET& client_socket) {
         Client client(client_socket);
         if (isGreetingSuccessful(client_socket)) {
-            Register(client);
+            registerClient(client);
             char buffer[1024];
             while (true) {
                 char tag = Receiving::receiveOneByte(client_socket);
@@ -315,7 +315,7 @@ public:
             }
         }
         else Sending::sendMessage(client.socket, "The protocol was ignored!",0x05);
-        CloseClient(client);
+        closeClient(client);
     }
 };
 
@@ -367,7 +367,7 @@ int main()
                 continue;
             }
             active_clients++;
-           thread(&Chat::HandleClient, &chat, client_socket).detach();
+           thread(&Chat::handleClient, &chat, client_socket).detach();
         }
     }
 
