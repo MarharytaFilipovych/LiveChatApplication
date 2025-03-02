@@ -366,7 +366,14 @@ int main()
                 WSACleanup();
                 continue;
             }
-            active_clients++;
+            int expected = active_clients.load();
+            while (expected < MAX_CLIENTS && !active_clients.compare_exchange_weak(expected, expected + 1)) {
+                expected = active_clients.load();
+            }
+            if (expected >= MAX_CLIENTS) {
+                closesocket(client_socket);  
+                continue;
+            }
            thread(&Chat::handleClient, &chat, client_socket).detach();
         }
     }
